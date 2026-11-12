@@ -1,4 +1,5 @@
 import { normalizeGarrisonRecord } from './garrison-view.js'
+import { withRequestTimeout } from './request-timeout.js'
 
 const origin = 'https://zonai.skland.com'
 const signatureVersion = '1.21.0'
@@ -32,15 +33,17 @@ export class Skland {
         const query = new URLSearchParams(params).toString()
         const timestamp = String(Math.floor(Date.now() / 1000))
         const headers = await signRequest(token, path, query, timestamp)
-        const response = await fetch(origin + path + (query ? '?' + query : ''), {
-            headers: {
-                ...headers, cred: this.cred, ...(token ? { token } : {}),
-                ...(uid ? { 'sk-game-role': `1_${uid}_0` } : {})
-            },
-            signal: AbortSignal.timeout(timeout), credentials: 'omit', cache: 'no-store', redirect: 'error'
-        }).catch(() => { throw new Error('无法连接森空岛，请检查网络后重试。') })
-        const result = await response.json().catch(() => null)
-        return { response, result }
+        return withRequestTimeout(timeout, async signal => {
+            const response = await fetch(origin + path + (query ? '?' + query : ''), {
+                headers: {
+                    ...headers, cred: this.cred, ...(token ? { token } : {}),
+                    ...(uid ? { 'sk-game-role': `1_${uid}_0` } : {})
+                },
+                signal, credentials: 'omit', cache: 'no-store', redirect: 'error'
+            }).catch(() => { throw new Error('无法连接森空岛，请检查网络后重试。') })
+            const result = await response.json().catch(() => null)
+            return { response, result }
+        })
     }
 
     getToken() {

@@ -4,6 +4,7 @@ import { $, detailView, emptyState, historyView, loading, node, playerView, setM
 import { bindDetailTooltips } from './detail-tooltips.js'
 import { playerIdentity } from './player.js'
 import { downloadShareImage } from './share-image.js'
+import { withRequestTimeout } from './request-timeout.js'
 
 const bindingMessage = $('binding-message')
 const queryStatus = $('query-status')
@@ -268,15 +269,16 @@ async function acceptCred(cred, { sequence, saved = {} }) {
     void loadHistory({ reset: true })
 }
 
-async function post(path, data, signal) {
-    const response = await fetch(path, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data), cache: 'no-store',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(50_000)])
-    })
-    const result = await response.json()
-    if (!response.ok) throw new Error(result.error || '扫码请求失败，请稍后重试。')
-    return result
+function post(path, data, signal) {
+    return withRequestTimeout(50_000, async requestSignal => {
+        const response = await fetch(path, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data), cache: 'no-store', signal: requestSignal
+        })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || '扫码请求失败，请稍后重试。')
+        return result
+    }, signal)
 }
 
 function wait(ms, signal) {

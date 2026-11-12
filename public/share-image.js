@@ -1,4 +1,5 @@
 import { domToBlob } from '/vendor/modern-screenshot.mjs'
+import { withRequestTimeout } from './request-timeout.js'
 
 const titles = { history: '战绩列表', detail: '对局详情', statistics: '赛季统计' }
 const excluded = '.export-button, .detail-actions, .detail-tip, #query-status, #export-status, #detail-export-status, .pager button, #refresh'
@@ -7,11 +8,13 @@ async function embedImage(value) {
     const url = new URL(value, location.href)
     if (url.protocol === 'data:') return value
     const endpoint = url.origin === location.origin ? url.href : '/api/share-asset?' + new URLSearchParams({ url: url.href })
-    const response = await fetch(endpoint, {
-        credentials: 'omit', cache: 'force-cache', signal: AbortSignal.timeout(20_000)
+    const blob = await withRequestTimeout(20_000, async signal => {
+        const response = await fetch(endpoint, {
+            credentials: 'omit', cache: 'force-cache', signal
+        })
+        if (!response.ok) throw new Error('图片加载失败')
+        return response.blob()
     })
-    if (!response.ok) throw new Error('图片加载失败')
-    const blob = await response.blob()
     return new Promise((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => resolve(reader.result)
