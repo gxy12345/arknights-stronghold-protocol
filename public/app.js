@@ -1,5 +1,6 @@
 import { AccountError, Skland, validCred } from './skland.js'
-import { accountKey, forgetStatistics, syncStatistics } from './local-data.js'
+import { accountKey, forgetStatistics, legacyStatsPrefix, statisticsKey, syncStatistics } from './local-data.js'
+import { garrisonMetricRecord, garrisonStatisticsAssets } from './garrison-view.js'
 import { $, detailView, emptyState, historyView, loading, node, playerView, setMessage, statisticsView } from './views.js'
 import { bindDetailTooltips } from './detail-tooltips.js'
 import { playerIdentity } from './player.js'
@@ -72,8 +73,23 @@ function saveAccount() {
     try {
         localStorage.setItem(accountKey, JSON.stringify({ cred: account.client.cred, uid: account.uid, seasonId }))
         account.persisted = true
-    } catch { account.persisted = false }
+    } catch { /* An earlier saved binding can still be available. */ }
 }
+
+function bindingStillCurrent(session) {
+    if (session !== account) return false
+    if (!session.persisted) return true
+    try {
+        return JSON.parse(localStorage.getItem(accountKey))?.cred === session.client.cred
+    } catch (error) {
+        // Storage may be unavailable. The statistics adapter handles that as a failed save.
+        return !(error instanceof SyntaxError)
+    }
+}
+
+const withStatisticsLock = work => navigator.locks
+    ? navigator.locks.request('stronghold.statistics', () => work(true))
+    : Promise.resolve(work(false))
 
 function setTab() {
     if (!viewExport.hasAttribute('aria-busy')) setMessage($('export-status'))
@@ -112,12 +128,12 @@ function renderResults() {
         const link = node('a', 'text-link', '前往绑定')
         link.href = '#binding'
         results.replaceChildren(emptyState(stats ? '绑定后查看统计' : '绑定后查看战绩',
-            stats ? '按模式与难度累计模拟成功次数、击败数与最近奖杯。'
+            stats ? '查看赛季累计战绩、常用策略与盟约、Boss 击杀和耗时。'
                 : '绑定森空岛账号，查询卫戍协议的对局记录与阵容。', link))
     } else if (querying || pendingAccount) {
         results.replaceChildren(loading())
     } else if (stats && history?.statistics) {
-        results.replaceChildren(statisticsView(history.statistics.summary, history.statistics.persisted))
+        results.replaceChildren(statisticsView(history.statistics.summary, history.statistics.notice))
     } else if (history?.records) {
         results.replaceChildren(historyView(history.records, page, changePage, openRecord))
     } else {
@@ -171,7 +187,8 @@ function updateSeasonOptions(resource) {
 async function loadHistory({ reset = false } = {}) {
     if (!account) return
     const current = ++query
-    const { client, uid } = account
+    const session = account
+    const { client, uid } = session
     const requestedSeason = seasonId
     const previous = reset ? null : history
     if (reset) history = null
@@ -182,6 +199,8 @@ async function loadHistory({ reset = false } = {}) {
     setMessage(queryStatus, '正在同步森空岛战绩…')
     renderResults()
     let resolvedSeason = requestedSeason
+    const isCurrent = () => current === query && account?.uid === uid && bindingStillCurrent(session)
+    const isCurrentScope = () => isCurrent() && seasonId === resolvedSeason
     try {
         const role = account.roles.find(role => role.uid === uid)
         const [resource, player] = await Promise.all([
@@ -189,7 +208,7 @@ async function loadHistory({ reset = false } = {}) {
             client.player(uid).then(data => playerIdentity(data, role)).catch(() =>
                 account?.player?.uid === uid ? account.player : playerIdentity({}, role))
         ])
-        if (current !== query) return
+        if (!isCurrent()) return
         account.player = player
         renderPlayer()
         resolvedSeason = String(resource.versionInfo?.seasonId || '')
@@ -204,23 +223,26 @@ async function loadHistory({ reset = false } = {}) {
         saveAccount()
         accountUI()
         const raw = await client.history(uid, resolvedSeason)
-        if (current !== query) return
-        const writeStatistics = () => current === query && syncStatistics(uid, resolvedSeason, raw)
-        const statistics = navigator.locks
-            ? await navigator.locks.request('stronghold.statistics', writeStatistics)
-            : writeStatistics()
-        if (current !== query) return
-        const records = await client.normalizeHistory(uid, resolvedSeason, raw, resource)
-        if (current !== query) return
+        if (!isCurrentScope()) return
+        const facts = raw.map(garrisonMetricRecord)
+        const versionResources = await client.historyResources(uid, resolvedSeason, raw, resource)
+        if (!isCurrentScope()) return
+        const assets = garrisonStatisticsAssets(resolvedSeason, facts, resource, versionResources)
+        const records = await client.normalizeHistory(uid, resolvedSeason, raw, resource, versionResources)
+        const statistics = await withStatisticsLock(write => isCurrentScope() &&
+            syncStatistics(uid, resolvedSeason, facts, { assets, write }))
+        if (!statistics || !isCurrentScope()) return
         history = { records, statistics }
         page = 1
-        setMessage(queryStatus, statistics.persisted ? '' : '本次统计未能保存，请检查浏览器的站点数据设置。', !statistics.persisted)
+        setMessage(queryStatus, statistics.notice, !statistics.persisted)
     } catch (error) {
-        if (current !== query) return
+        if (!isCurrent()) return
         history = previous
-        if (!history && resolvedSeason) {
-            const statistics = syncStatistics(uid, resolvedSeason, [])
-            if (statistics.summary.total) history = { statistics }
+        if (!history && resolvedSeason === seasonId && seasonId) {
+            const statistics = await withStatisticsLock(() => isCurrentScope() &&
+                syncStatistics(uid, resolvedSeason, [], { readOnly: true }))
+            if (!isCurrentScope()) return
+            if (statistics?.summary.total || statistics?.notice) history = { statistics }
         }
         setMessage(queryStatus, error.message, true)
     } finally {
@@ -254,13 +276,14 @@ function changeMethod(qr) {
     setMessage(bindingMessage)
 }
 
-async function acceptCred(cred, { sequence, saved = {} }) {
+async function acceptCred(cred, { sequence, saved = {}, restoring = false }) {
     const client = new Skland(cred)
     const roles = await client.roles()
     if (sequence !== bindSequence) return
+    if (restoring && JSON.parse(localStorage.getItem(accountKey))?.cred !== cred) return
     if (!roles.length) throw new AccountError('此森空岛账号未绑定明日方舟角色。')
     const uid = roles.find(role => role.uid === saved.uid)?.uid ?? roles[0].uid
-    account = { client, uid, roles, persisted: false }
+    account = { client, uid, roles, persisted: restoring }
     seasonId = uid === saved.uid && typeof saved.seasonId === 'string' ? saved.seasonId : ''
     saveAccount()
     accountUI()
@@ -336,8 +359,8 @@ async function scan() {
 
 function clearAccount() {
     try {
-        localStorage.removeItem(accountKey)
         if ($('clear-stats').checked) forgetStatistics(account.roles.map(role => role.uid))
+        localStorage.removeItem(accountKey)
     } catch {
         if (account.persisted) {
             setMessage(queryStatus, '未能清除此浏览器的全部站点数据。', true)
@@ -368,10 +391,12 @@ async function restoreAccount() {
     pendingAccount = true
     setMessage(queryStatus, '正在验证本地绑定…')
     renderResults()
-    try { await acceptCred(saved.cred, { sequence, saved }) } catch (error) {
+    try { await acceptCred(saved.cred, { sequence, saved, restoring: true }) } catch (error) {
         if (sequence === bindSequence) {
             if (error instanceof AccountError) {
-                try { localStorage.removeItem(accountKey) } catch { /* Storage can be disabled. */ }
+                try {
+                    if (JSON.parse(localStorage.getItem(accountKey))?.cred === saved.cred) localStorage.removeItem(accountKey)
+                } catch { /* Storage can be disabled. */ }
             }
             setMessage(bindingMessage, error.message, true)
             setMessage(queryStatus)
@@ -422,6 +447,7 @@ seasonSelect.addEventListener('change', () => {
     void loadHistory({ reset: true })
 })
 roleSelect.addEventListener('change', () => {
+    if (!account || !bindingStillCurrent(account)) return
     account.uid = roleSelect.value
     seasonId = ''
     seasonSelect.replaceChildren()
@@ -437,15 +463,36 @@ $('unbind').addEventListener('click', () => {
 })
 unbindDialog.addEventListener('close', () => {
     if (unbindDialog.returnValue !== 'confirm' || !account) return
-    if (navigator.locks) void navigator.locks.request('stronghold.statistics', clearAccount)
-    else clearAccount()
+    const session = account
+    void withStatisticsLock(() => {
+        if (bindingStillCurrent(session)) clearAccount()
+    })
 })
 window.addEventListener('hashchange', setTab)
 window.addEventListener('storage', event => {
-    if (event.storageArea !== localStorage || (event.key !== accountKey && event.key !== null)) return
-    let cred
-    try { cred = JSON.parse(event.newValue)?.cred } catch { /* Invalid account data is cleared on reload. */ }
-    if (cred !== account?.client.cred) location.reload()
+    if (event.storageArea !== localStorage) return
+    if (event.key === accountKey || event.key === null) {
+        let cred
+        try { cred = JSON.parse(event.newValue)?.cred } catch { /* Invalid account data is cleared on reload. */ }
+        if (cred !== account?.client.cred) {
+            location.reload()
+            return
+        }
+    }
+    if (!account || !seasonId) return
+    const { uid } = account
+    const selectedSeason = seasonId
+    if (event.key !== null && event.key !== statisticsKey(uid, selectedSeason) &&
+        event.key !== statisticsKey(uid, selectedSeason, legacyStatsPrefix)) return
+    const session = account
+    const current = query
+    const isCurrentScope = () => current === query && account?.uid === uid &&
+        seasonId === selectedSeason && bindingStillCurrent(session)
+    void withStatisticsLock(() => isCurrentScope() && syncStatistics(uid, selectedSeason, [], { readOnly: true })).then(statistics => {
+        if (!statistics || !isCurrentScope()) return
+        history = { ...history, statistics }
+        renderResults()
+    })
 })
 
 setTab()

@@ -1,4 +1,4 @@
-import { garrisonImageUrl } from './garrison-view.js'
+import { formatGarrisonDuration, garrisonImageUrl } from './garrison-view.js'
 
 export const $ = id => document.getElementById(id)
 export const node = (tag, className, ...content) => {
@@ -110,17 +110,43 @@ export function historyView(records, page, onPage, onOpen) {
 }
 
 function metric(label, amount) {
-    return node('div', '', node('dt', '', label), node('dd', '', value(amount)))
+    return node('div', '', node('dt', '', label), node('dd', '', typeof amount === 'string' ? amount : value(amount)))
 }
 
-export function statisticsView(stats, persisted) {
-    if (!stats?.total) return emptyState('本赛季暂无统计', '同步到对局后，会在这里按模式与难度累计。')
+function statisticsRanking(kind, entries, emptyLabel = '暂无数据') {
+    const strategy = kind === 'strategy'
+    const rows = entries.slice(0, 5).map(entry => {
+        const icon = node('span', 'stat-rank-icon', node('span', '', '◇'), ...imageIf(remoteImage(entry.iconUrl), ''))
+        icon.setAttribute('aria-hidden', 'true')
+        const result = strategy
+            ? `胜率 ${entry.winRate === null ? '—' : entry.winRate + '%'}`
+            : `最高 ${entry.maxLayer === null ? '—' : value(entry.maxLayer) + '层'}`
+        return node('li', 'stat-rank-entry', icon,
+            node('p', 'stat-rank-count', node('strong', '', value(entry.games)), ' 场'),
+            node('p', 'stat-rank-name', entry.name), node('p', 'stat-rank-metric', result))
+    })
+    const section = node('section', 'stat-ranking', node('h4', '', strategy ? '常用策略' : '常用盟约'),
+        rows.length ? node('ul', 'stat-rank-list', ...rows) : node('p', 'stat-note', emptyLabel))
+    section.dataset.kind = kind
+    return section
+}
+
+export function statisticsView(stats, notice) {
     const totals = node('dl', 'stat-totals',
         metric('累计对局', stats.total), metric('模拟成功', stats.wins),
         metric('累计击败', stats.kills), metric('最近奖杯', stats.trophies))
-    const note = persisted
-        ? '每次同步会累计新对局。击败数只统计森空岛有返回该字段的对局。'
-        : '浏览器未能保存累计数据。这里显示本次查询的统计。'
+    const { boss, duration, coverage } = stats
+    const sample = reported => `${reported} / ${coverage.total} 局`
+    const extra = node('div', 'stat-extra',
+        node('section', 'stat-card', node('h3', '', 'Boss 击杀'),
+            node('strong', 'stat-amount', boss.reported ? value(boss.total) : '暂无数据'),
+            node('p', '', `普通 ${value(boss.normal)} · 隐秘 ${value(boss.hidden)}`),
+            node('p', 'stat-note', `数据覆盖 ${sample(boss.reported)}`)),
+        node('section', 'stat-card', node('h3', '', '累计耗时'),
+            node('strong', 'stat-amount', duration.reported ? formatGarrisonDuration(duration.totalSec) : '暂无数据'),
+            node('p', '', `平均 ${formatGarrisonDuration(duration.avgSec)}`),
+            node('p', '', `最短 ${formatGarrisonDuration(duration.minSec)} · 最长 ${formatGarrisonDuration(duration.maxSec)}`),
+            node('p', 'stat-note', `数据覆盖 ${sample(duration.reported)}`)))
     const head = node('tr', '', ...['模式', '难度', '成功', '对局'].map(label => {
         const th = node('th', '', label)
         th.scope = 'col'
@@ -128,8 +154,17 @@ export function statisticsView(stats, persisted) {
     }))
     const rows = stats.difficulties.map(group => node('tr', '', node('td', '', tone(group.mode, group.modeTone)),
         node('td', '', tone(group.label, group.tone)), node('td', '', value(group.wins)), node('td', '', value(group.total))))
-    return node('div', 'statistics', totals, node('p', 'stat-note', note),
-        node('table', 'stat-table', node('caption', 'visually-hidden', '按模式与难度统计'), node('thead', '', head), node('tbody', '', ...rows)))
+    const table = rows.length
+        ? node('table', 'stat-table', node('caption', 'visually-hidden', '按模式与难度统计'), node('thead', '', head), node('tbody', '', ...rows))
+        : node('p', 'stat-note stat-source', '本赛季暂未收录对局。')
+    return node('div', 'statistics', totals, extra,
+        node('section', 'stat-preferences', node('h3', '', '偏好统计'),
+            statisticsRanking('strategy', stats.strategies),
+            statisticsRanking('bond', stats.bonds, coverage.bondsReported ? '暂无上榜盟约' : '暂无数据')),
+        table, node('div', 'stat-source',
+            node('p', 'stat-note', '按此浏览器已收录的对局累计。首次同步仅覆盖森空岛当前返回的战绩。'),
+            node('p', 'stat-note', `数据覆盖 · 普通击败 ${sample(stats.killsReported)} · 策略 ${sample(coverage.strategyReported)} · 盟约 ${sample(coverage.bondsReported)}`),
+            ...(notice ? [node('p', 'stat-note stat-warning', notice)] : [])))
 }
 
 function detailIcon(label, url, fallback, { description = '', glow = '' } = {}) {
@@ -185,6 +220,8 @@ function recordOverview(record) {
     if (record.id) meta.append(node('span', 'detail-record-id', `战绩 ID ${record.id}`))
     const metrics = node('dl', 'detail-grid')
     if (record.killCnt != null) metrics.append(metric('击杀数', record.killCnt))
+    if (record.bossKills) metrics.append(metric('普通 Boss', record.bossKills.normal), metric('隐秘 Boss', record.bossKills.hidden))
+    if (record.durationSec != null) metrics.append(metric('耗时', formatGarrisonDuration(record.durationSec)))
     if (record.trophyBefore != null || record.trophyAfter != null) {
         metrics.append(node('div', '', node('dt', '', '奖杯变化'),
             node('dd', '', `${value(record.trophyBefore)} → ${value(record.trophyAfter)}`)))
@@ -196,7 +233,7 @@ function recordOverview(record) {
 }
 
 function bondRow(bond) {
-    const state = node('span', 'bond-state', bond.active ? '已激活' : '未激活')
+    const state = node('span', 'bond-state', bond.active == null ? '激活状态未知' : bond.active ? '已激活' : '未激活')
     const row = node('li', 'detail-bond', ...imageIf(remoteImage(bond.iconUrl), ''),
         node('div', '', node('strong', '', bond.name), state), node('span', 'bond-layer', `${bond.layer} 层`))
     row.toggleAttribute('data-active', bond.active)

@@ -101,19 +101,11 @@ export class Skland {
     async history(uid, seasonId) {
         const data = await this.get('/api/v1/game/garrison/guide/history-log', { uid, params: { seasonId } })
         if (!Array.isArray(data.records)) throw new Error('森空岛返回的战绩格式无效，请稍后重试。')
-        const seen = new Set()
-        return data.records.filter(record => {
-            if (!record || String(record.activityId) !== seasonId) return false
-            const id = String(record.id ?? '')
-            if (!id) return true
-            if (seen.has(id)) return false
-            seen.add(id)
-            return true
-        })
+        return data.records.filter(record => record && String(record.activityId) === seasonId)
     }
 
-    async normalizeHistory(uid, seasonId, records, resource) {
-        const versions = [...new Set(records.map(record => String(record.versionId || '')).filter(Boolean))]
+    async historyResources(uid, seasonId, records, resource) {
+        const versions = [...new Set(records.map(record => String(record.versionId ?? '').trim()).filter(Boolean))]
             .filter(versionId => versionId !== String(resource.versionInfo?.versionId))
         const versionResources = Object.create(null)
         for (let offset = 0; offset < versions.length; offset += 4) {
@@ -124,8 +116,20 @@ export class Skland {
                 }
             }))
         }
+        return { [seasonId]: { versionResourceMap: versionResources } }
+    }
+
+    async normalizeHistory(uid, seasonId, records, resource, versionResources) {
+        versionResources ??= await this.historyResources(uid, seasonId, records, resource)
+        const seen = new Set()
         const timestamp = value => Number(value) < 1e12 ? Number(value) * 1000 : Number(value)
-        return records.map(raw => normalizeGarrisonRecord(raw, resource, { [seasonId]: { versionResourceMap: versionResources } }))
+        return records.map(raw => normalizeGarrisonRecord(raw, resource, versionResources))
+            .filter(record => {
+                if (!record.id) return true
+                if (seen.has(record.id)) return false
+                seen.add(record.id)
+                return true
+            })
             .sort((a, b) => (timestamp(b.timestamp) || 0) - (timestamp(a.timestamp) || 0))
     }
 }

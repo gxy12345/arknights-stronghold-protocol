@@ -1,71 +1,84 @@
-import { garrisonRecordLabels, garrisonRecordStatistics } from './garrison-view.js'
+import { garrisonMetricRecord } from './garrison-view.js'
+import { mergeMetricRecords, migrateSnapshot, validateBaseline } from './statistics-core.js'
 
 export const accountKey = 'stronghold.account.v1'
-export const statsPrefix = 'stronghold.statistics.v1:'
-const order = ['training', 'standard', 'risk', 'extreme', 'ultimate', 'neutral']
-const groupKey = ({ modeCode, difficultyCode }) => JSON.stringify([modeCode, difficultyCode])
-const empty = () => ({ recordIds: [], difficulties: [], kills: 0, killsReported: 0, latestTrophy: null })
+export const statsPrefix = 'stronghold.statistics.v2:'
+export const legacyStatsPrefix = 'stronghold.statistics.v1:'
+export const statisticsKey = (uid, seasonId, prefix = statsPrefix) => prefix + JSON.stringify([uid, seasonId])
 
-// Same count and difficulty rules as the plugin. No detailed lineup is persisted.
-export function mergeStatistics(seasonId, snapshot = empty(), records = []) {
-    const data = structuredClone(snapshot)
-    const ids = new Set(data.recordIds)
-    const groups = new Map(data.difficulties.map(row => [groupKey(row), row]))
-    for (const raw of records) {
-        const { id, modeCode, difficultyCode, success, timestamp, killCnt, trophyAfter } = garrisonRecordStatistics(raw)
-        if (!id || ids.has(id)) continue
-        ids.add(id)
-        const group = { modeCode, difficultyCode: modeCode === 'LOCAL' ? 'TRAINING' : difficultyCode }
-        const key = groupKey(group)
-        if (!groups.has(key)) groups.set(key, { ...group, total: 0, wins: 0 })
-        const row = groups.get(key)
-        row.total++
-        if (success) row.wins++
-        if (Number.isFinite(killCnt) && killCnt >= 0) {
-            data.kills += killCnt
-            data.killsReported++
-        }
-        const time = Number(timestamp)
-        const timeMs = time < 1e12 ? time * 1000 : time
-        if (Number.isFinite(timeMs) && timeMs > (data.latestTrophy?.timeMs ?? 0) && Number.isFinite(trophyAfter) && trophyAfter >= 0) {
-            data.latestTrophy = { timeMs, value: trophyAfter }
-        }
-    }
-    data.recordIds = [...ids]
-    data.difficulties = [...groups.values()]
-    const difficulties = data.difficulties.map(({ modeCode, difficultyCode, total, wins }) => {
-        const { mode, modeTone, difficulty, difficultyTone } = garrisonRecordLabels({ modeCode, difficultyCode, seasonId })
-        return { mode, modeTone, label: difficulty, tone: difficultyTone, total, wins }
-    }).sort((a, b) => a.modeTone.localeCompare(b.modeTone) || order.indexOf(a.tone) - order.indexOf(b.tone))
-    return {
-        snapshot: data, summary: {
-            total: ids.size, wins: difficulties.reduce((sum, row) => sum + row.wins, 0),
-            trophies: data.latestTrophy?.value ?? null, kills: data.killsReported ? data.kills : null,
-            killsReported: data.killsReported, difficulties
-        }
-    }
+export function mergeStatistics(seasonId, snapshot, records = []) {
+    return mergeMetricRecords(seasonId, snapshot, records.map(garrisonMetricRecord))
 }
 
-export function syncStatistics(uid, seasonId, records) {
-    const key = statsPrefix + JSON.stringify([uid, seasonId])
+function readBaseline(key) {
+    const value = localStorage.getItem(key)
+    if (value === null) return null
+    const data = JSON.parse(value)
+    if (data?.version !== undefined && data.version !== 1) throw new Error('Invalid legacy statistics version')
+    return validateBaseline(data)
+}
+
+function readSnapshot(uid, seasonId, key) {
+    const raw = localStorage.getItem(key)
+    const saved = raw === null ? undefined : JSON.parse(raw)
+    if (raw !== null && saved?.version !== 2) throw new Error('Invalid statistics version')
+    const snapshot = migrateSnapshot(saved)
+    let legacy, legacyConflict = false
     try {
-        const saved = JSON.parse(localStorage.getItem(key) || 'null')
-        const { snapshot, summary } = mergeStatistics(seasonId, saved || undefined, records)
-        if (records.length && snapshot.recordIds.length !== (saved?.recordIds?.length ?? 0)) {
-            localStorage.setItem(key, JSON.stringify(snapshot))
+        legacy = readBaseline(statisticsKey(uid, seasonId, legacyStatsPrefix))
+    } catch (error) {
+        if (raw === null) throw error
+        legacyConflict = true
+    }
+
+    let migrated = false
+    if (legacy) {
+        const previousIds = snapshot.legacyV1?.recordIds ?? []
+        const ids = new Set(legacy.recordIds)
+        if (previousIds.every(id => ids.has(id))) {
+            if (!snapshot.legacyV1 || ids.size > previousIds.length) {
+                snapshot.legacyV1 = legacy
+                migrated = true
+            }
+        } else {
+            legacyConflict = true
         }
-        return { summary, persisted: true }
+    }
+    return { snapshot, migrated, legacyConflict }
+}
+
+// The caller holds the statistics lock for writes. A read can use the last
+// complete localStorage snapshot even when the browser has no Web Locks.
+export function syncStatistics(uid, seasonId, facts = [], { assets = [], write = false, readOnly = false } = {}) {
+    const key = statisticsKey(uid, seasonId)
+    let result
+    try {
+        const { snapshot, migrated, legacyConflict } = readSnapshot(uid, seasonId, key)
+        const { snapshot: merged, summary, changed } = mergeMetricRecords(seasonId, snapshot, facts, assets)
+        result = { summary, persisted: !migrated, notice: legacyConflict ? '旧版统计缓存无法合并，请刷新仍打开的旧版页面。' : '' }
+        if (readOnly) return result
+        if (!write) {
+            return { ...result, persisted: false, notice: [result.notice, '此浏览器缺少 Web Locks，新增统计仅本次有效。'].filter(Boolean).join(' ') }
+        }
+        if (migrated || changed) localStorage.setItem(key, JSON.stringify(merged))
+        return { ...result, persisted: true }
     } catch {
-        return { summary: mergeStatistics(seasonId, undefined, records).summary, persisted: false }
+        return {
+            summary: result?.summary ?? mergeMetricRecords(seasonId, undefined, facts, assets).summary,
+            persisted: false,
+            notice: [result?.notice, '本次统计未能保存，请检查浏览器的站点数据设置或刷新后重试。'].filter(Boolean).join(' ')
+        }
     }
 }
 
 export function forgetStatistics(uids) {
-    const keys = Object.keys(localStorage).filter(key => key.startsWith(statsPrefix))
-    for (const key of keys) {
-        try {
-            const [uid] = JSON.parse(key.slice(statsPrefix.length))
-            if (uids.includes(uid)) localStorage.removeItem(key)
-        } catch { /* Other accounts and malformed entries are left alone. */ }
+    const selected = new Set(uids.map(String))
+    for (const key of Object.keys(localStorage)) {
+        const prefix = [statsPrefix, legacyStatsPrefix].find(prefix => key.startsWith(prefix))
+        if (!prefix) continue
+        let scope
+        try { scope = JSON.parse(key.slice(prefix.length)) } catch { continue }
+        if (Array.isArray(scope) && scope.length === 2 && scope.every(value => typeof value === 'string' && value) &&
+            selected.has(scope[0])) localStorage.removeItem(key)
     }
 }

@@ -3,6 +3,7 @@ import { withRequestTimeout } from './request-timeout.js'
 
 const titles = { history: '战绩列表', detail: '对局详情', statistics: '赛季统计' }
 const excluded = '.export-button, .detail-actions, .detail-tip, #query-status, #export-status, #detail-export-status, .pager button, #refresh'
+const transparentPixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 async function embedImage(value) {
     const url = new URL(value, location.href)
@@ -32,7 +33,8 @@ export async function downloadShareImage({ kind, source, page }) {
     const bounds = source.getBoundingClientRect()
     const width = Math.ceil(bounds.width)
     const height = Math.max(Math.ceil(bounds.height), source.scrollHeight + 2)
-    const scale = Math.min(2, 8192 / height, Math.sqrt(12_000_000 / (width * height)))
+    if (width <= 0 || height <= 0) throw new Error('图片尺寸无效，请重试')
+    const scale = Math.min(2, 8192 / width, 8192 / height, Math.sqrt(12_000_000 / (width * height)))
     const resources = new Map()
     const png = await domToBlob(source, {
         type: 'image/png', width, height, scale, timeout: 20_000,
@@ -44,7 +46,7 @@ export async function downloadShareImage({ kind, source, page }) {
             boxSizing: 'border-box', overflow: 'visible', height: height + 'px'
         },
         fetchFn: url => {
-            if (!resources.has(url)) resources.set(url, embedImage(url))
+            if (!resources.has(url)) resources.set(url, embedImage(url).catch(() => transparentPixel))
             return resources.get(url)
         },
         onCloneEachNode: cloned => {
