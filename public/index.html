@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="绑定森空岛，查询卫戍协议战绩、对局详情与赛季统计。">
+  <meta name="theme-color" content="#141414">
+  <title>卫戍协议战绩查询</title>
+  <link rel="icon" href="/assets/stronghold.png">
+  <link rel="stylesheet" href="/styles.css">
+  <script defer src="/vendor/md5.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <div class="shell site-header-inner">
+      <a class="brand" href="/">
+        <img src="/assets/stronghold.png" width="36" height="36" alt="">
+        <span>卫戍协议战绩查询</span>
+      </a>
+      <div class="project-links" aria-label="开源仓库">
+        <span class="star-message">如果觉得工具有用，欢迎点一个 Star</span>
+        <a id="web-repository" class="project-link" href="https://github.com/gxy12345/arknights-stronghold-protocol" target="_blank" rel="noopener noreferrer" aria-label="Web 版 GitHub 仓库"><span class="github-mark" aria-hidden="true"></span>Web 版</a>
+        <a class="project-link" href="https://github.com/gxy12345/arknights-plugin" target="_blank" rel="noopener noreferrer" aria-label="插件版 GitHub 仓库"><span class="github-mark" aria-hidden="true"></span>插件版</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="shell">
+    <div class="workspace">
+      <section class="ledger" aria-label="卫戍协议战绩与统计">
+        <div class="ledger-toolbar">
+          <nav class="view-nav" aria-label="战绩视图">
+            <a href="#history" id="history-tab" aria-current="page">对局战绩</a>
+            <a href="#statistics" id="statistics-tab">赛季统计</a>
+          </nav>
+          <div class="query-actions" id="query-actions" hidden>
+            <label class="visually-hidden" for="season">赛季</label>
+            <select id="season"></select>
+            <button class="button small" type="button" id="refresh">刷新</button>
+            <button class="button small export-button" type="button" id="export-view" hidden>导出图片</button>
+          </div>
+        </div>
+        <p id="query-status" class="query-status" role="status" hidden></p>
+        <p id="export-status" class="query-status" role="status" hidden></p>
+        <div id="player-info" hidden></div>
+        <div id="results">
+          <div class="empty-state">
+            <div class="empty-emblem" aria-hidden="true"><span></span><span></span><span></span></div>
+            <h2>绑定后查看战绩</h2>
+            <p>绑定森空岛账号，查询卫戍协议的对局记录与阵容。</p>
+            <a class="text-link" href="#binding">前往绑定</a>
+          </div>
+        </div>
+      </section>
+
+      <aside id="binding" class="binding" aria-labelledby="binding-title">
+        <div class="binding-head">
+          <h2 id="binding-title">绑定森空岛</h2>
+          <span id="account-state" class="account-state">未绑定</span>
+        </div>
+        <div id="binding-methods">
+          <div class="method-nav" role="group" aria-label="绑定方式">
+            <button type="button" id="qr-method" aria-pressed="true">扫码绑定</button>
+            <button type="button" id="cred-method" aria-pressed="false">Cred 绑定</button>
+          </div>
+          <div id="qr-panel" class="method-body">
+            <p>用森空岛 App 扫描二维码并确认登录。</p>
+            <div id="qr-image" hidden></div>
+            <button class="button primary" type="button" id="qr-start">生成二维码</button>
+          </div>
+          <form id="cred-panel" class="method-body" hidden>
+            <label for="cred">森空岛 Cred</label>
+            <input id="cred" type="password" aria-describedby="binding-message" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="粘贴 Cred">
+            <button class="button primary" type="submit" id="cred-submit">验证并绑定</button>
+          </form>
+          <p class="account-message" id="binding-message" role="status" hidden></p>
+        </div>
+        <div id="bound-account" hidden>
+          <p id="role-meta" class="role-meta"></p>
+          <label for="role">明日方舟角色</label>
+          <select id="role"></select>
+          <button type="button" id="unbind" class="button small">解除绑定</button>
+        </div>
+        <details class="privacy" open>
+          <summary>数据保存在此浏览器</summary>
+          <p>Cred、角色选择与统计保存在当前浏览器。查询直连森空岛，本站仅临时中转扫码登录，服务端不留存账号、凭证或战绩。</p>
+          <p>在共用设备上使用后，可解除绑定并清除本地统计。</p>
+        </details>
+      </aside>
+    </div>
+
+    <noscript><p>请启用 JavaScript 以绑定账号和查询卫戍战绩。</p></noscript>
+  </main>
+
+  <footer class="shell site-footer">
+    <span>《明日方舟》玩家工具</span>
+    <span>战绩来源为森空岛 <span class="footer-divider" aria-hidden="true"></span> 游戏素材版权归鹰角网络所有</span>
+  </footer>
+
+  <dialog id="detail" aria-labelledby="detail-title">
+    <div class="dialog-head">
+      <div class="detail-heading">
+        <h2 id="detail-title">对局详情</h2>
+        <div id="detail-role"></div>
+      </div>
+      <div class="detail-actions">
+        <button class="button small export-button" type="button" id="export-detail">导出图片</button>
+        <form method="dialog"><button class="button small" aria-label="关闭对局详情" autofocus>关闭</button></form>
+      </div>
+    </div>
+    <p id="detail-export-status" class="query-status" role="status" hidden></p>
+    <div id="detail-body" class="dialog-body"></div>
+    <div class="detail-tip" role="tooltip" popover="manual"></div>
+  </dialog>
+  <dialog id="unbind-dialog" aria-labelledby="unbind-title">
+    <div class="dialog-head"><h2 id="unbind-title">解除森空岛绑定</h2></div>
+    <form method="dialog" class="dialog-body confirm-form">
+      <p>将从此浏览器删除 Cred 和角色选择。</p>
+      <label><input type="checkbox" id="clear-stats"> 同时清除此账号的本地赛季统计</label>
+      <div class="dialog-actions">
+        <button class="button small" value="cancel" autofocus>取消</button>
+        <button class="button primary small" value="confirm">解除绑定</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

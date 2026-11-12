@@ -1,0 +1,5 @@
+.git
+.hallmark
+node_modules
+test
+.env*

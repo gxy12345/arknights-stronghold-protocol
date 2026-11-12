@@ -1,0 +1,19 @@
+{
+  "name": "arknights-stronghold-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "js-md5": "0.8.3",
+    "jsdom": "25.0.1",
+    "modern-screenshot": "4.6.6",
+    "qrcode": "1.5.4"
+  }
+}
